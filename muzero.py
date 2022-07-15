@@ -53,12 +53,12 @@ class Node:
     self.children = {}
     #self.to_play = -1
 
-  def value(self) -> bool:
+  def value(self) -> float:
     if self.visit_count == 0:
         return 0
     return self.value_sum / self.visit_count
 
-  def expanded(self) -> float:
+  def expanded(self) -> bool:
     return len(self.children) > 0
 
 
