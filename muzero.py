@@ -1,18 +1,41 @@
 import gym
 import math
-import random
-import numpy as np
-import torch.nn as nn
-from copy import deepcopy
-
+import numpy as np 
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
-from network import MuZeroNetwork
+from network import Network
+        
+device = "cpu"
+def get_temperature(num_iter):
+  # as num_iter increases, temperature decreases, and actions become greedier
+  if num_iter < 100: return 3
+  elif num_iter < 200: return 2
+  elif num_iter < 300: return 1
+  elif num_iter < 400: return .5
+  elif num_iter < 500: return .25
+  elif num_iter < 600: return .125
+  else: return .0625
 
-device='cpu'
+class MinMaxStats(object):
+  """A class that holds the min-max values of the tree."""
+
+  def __init__(self):
+    self.maximum = -float('inf')
+    self.minimum = float('inf')
+
+  def update(self, value: float):
+    self.maximum = max(self.maximum, value)
+    self.minimum = min(self.minimum, value)
+
+  def normalize(self, value: float) -> float:
+    if self.maximum > self.minimum:
+      # We normalize only when we have set the maximum and minimum values.
+      return (value - self.minimum) / (self.maximum - self.minimum)
+    return value
 
 class ReplayBuffer():
-  def __init__(self, obs_dim, act_dim, length=50000, device=device):
+  def __init__(self, obs_dim, act_dim, length=1000, device=device):
     self.states  = np.zeros((length, obs_dim))
     self.actions = np.zeros((length, act_dim))
     self.rewards = np.zeros(length)
@@ -33,7 +56,7 @@ class ReplayBuffer():
     self.nstates[idx] = n_obs
     self.values[idx]  = value
 
-  def sample(self, batch_size):
+  def sample(self, batch_size=100):
     indices = np.random.choice(self.size, size=batch_size, replace=False)
     states  = torch.tensor( self.states[indices] , dtype=torch.float).to(device)
     actions = torch.tensor( self.actions[indices], dtype=torch.float).to(device)
@@ -42,17 +65,23 @@ class ReplayBuffer():
     values  = torch.tensor( self.values[indices], dtype=torch.float).to(device)
     return states, actions, rewards, nstates, values
 
+"""
+A class that represents the nodes used in Monte Carlo Tree Search.
+"""
 class Node:
   def __init__(self, prior: float):
-    self.prior = prior       # prior policy probabilities
-    self.hidden_state = None # from dynamics function
-    self.reward = 0          # from dynamics function
-    self.policy = None       # from prediction function
-    self.value_sum = 0       # from prediction function
-    self.visit_count = 0
-    self.children = {}
-    #self.to_play = -1
+      self.prior = prior       # prior policy's probabilities
 
+      self.reward = 0           # from dynamics function
+      self.pred_policy = None   # from prediction function
+      self.pred_value = None    # from prediction function
+      self.hidden_state = None  # from dynamics function
+
+      self.children = {}
+      self.value_sum = 0    
+      self.visit_count = 0
+
+  # mean Q-value of this node
   def value(self) -> float:
     if self.visit_count == 0:
         return 0
@@ -62,40 +91,43 @@ class Node:
     return len(self.children) > 0
 
 
-class MuZero:
+class muzero:
   def __init__(self, in_dims, out_dims):
-    self.model  = MuZeroNetwork(in_dims, out_dims)
-    self.memory = ReplayBuffer(in_dims, out_dims, device=device)
-
+    super(muzero, self).__init__()
+    self.model = Network(in_dims, out_dims)
+    self.memory = ReplayBuffer(in_dims, out_dims)
+    self.MinMaxStats = MinMaxStats()
     self.discount  = 0.95
     self.pb_c_base = 19652
     self.pb_c_init = 1.25
-
-  def softmax(self, x):
-    e_x = np.exp(x - np.max(x))
-    return e_x / e_x.sum()
+    pass
 
   def ucb_score(self, parent: Node, child: Node, min_max_stats=None) -> float:
-     """
-     Calculate the modified UCB score of this Node. This value will be used when selecting Nodes during MCTS simulations.
-     The UCB score balances between exploiting Nodes with known promising values, and exploring Nodes that haven't been 
-     searched much throughout the MCTS simulations.
-     """
-     self.pb_c = math.log((parent.visit_count + self.pb_c_base + 1) / self.pb_c_base) + self.pb_c_init
-     self.pb_c *= math.sqrt(parent.visit_count) / (child.visit_count + 1)
+    """
+    Calculate the modified UCB score of this Node. This value will be used when selecting Nodes during MCTS simulations.
+    The UCB score balances between exploiting Nodes with known promising values, and exploring Nodes that haven't been 
+    searched much throughout the MCTS simulations.
+    """
+    self.pb_c = math.log((parent.visit_count + self.pb_c_base + 1) / self.pb_c_base) + self.pb_c_init
+    self.pb_c *= math.sqrt(parent.visit_count) / (child.visit_count + 1)
 
-     prior_score = self.pb_c * child.prior
-     value_score = child.reward + self.discount * child.value()
-     return prior_score + value_score
+    prior_score = self.pb_c * child.prior
+    value_score = 0
+    if child.visit_count > 0:
+      if min_max_stats is not None:
+        value_score = child.reward + self.discount * min_max_stats.normalize(child.value())
+      else: value_score = child.reward + self.discount * child.value()
+    return (prior_score + value_score).detach().numpy()
 
   def select_child(self, node: Node):
     total_visits_count = max(1 , sum([child.visit_count  for action, child in node.children.items()]) )
-    action_index = np.argmax([self.ucb_score(node,child).detach().numpy() for action, child in node.children.items()])
+    action_index = np.argmax([self.ucb_score(node,child,self.MinMaxStats) for action, child in node.children.items()])
     child  = node.children[action_index]
     action = np.array([1 if i==action_index else 0 for i in range(len(node.children))]) #.reshape(1,-1) 
     return action, child
-    
+
   def mcts(self, obs, num_simulations=10, temperature=None):
+
     # init root node
     root = Node(0) 
     root.hidden_state = self.model.ht(obs)
@@ -131,23 +163,18 @@ class MuZero:
         node.children[i] = Node(prior=policy[i])
         #node.children[i].to_play = -node.to_play
 
-      # BACKPROPAGATE: update the state with "backpropagate"
+      # update the state with "backpropagate"
       for bnode in reversed(search_path):
+        bnode.value_sum += value #if root.to_play == bnode.to_play else -value
         bnode.visit_count += 1
-        bnode.value_sum += value
-        discount = 0.95
-        value = bnode.reward + discount * value
+        #min_max_stats.update(node.value())
+        value = bnode.reward + self.discount * value
 
-    # SAMPLE an action proportional to the visit count of the child nodes of the root node
-    total_num_visits = sum([ child.visit_count for action, child in root.children.items() ])
-    policy = np.array( [ child.visit_count/total_num_visits for action, child in root.children.items()])
-
-    if temperature == None: # take the greedy action (to be used during test time)
-        action_index = np.argmax(policy)
-    else: # otherwise sample (to be used during training)
-        policy = (policy**(1/temperature)) / (policy**(1/temperature)).sum()
-        action_index = np.random.choice( np.arange(len(policy)) , p=policy )
-
+    # output the final policy
+    visit_counts = [(action, child.visit_count) for action, child in root.children.items()]
+    visit_counts = [x[1] for x in sorted(visit_counts)]
+    av = torch.tensor(visit_counts, dtype=torch.float64)
+    policy = F.softmax(av, dim=0).detach().numpy()
     return policy, value, root
 
   def train(self, batch_size=128):
@@ -156,7 +183,6 @@ class MuZero:
       obs, target_policys, target_rewards, n_obs, target_values = self.memory.sample(batch_size)
       lossFunc = torch.nn.BCELoss() # binary cross entropy 
 
-      """
       lv,lp,lr = 0,0,0
       gradient_scale = 1
       num_unroll_steps = 5
@@ -183,6 +209,7 @@ class MuZero:
       lr = lossFunc( F.softmax(rewards,dim=0), target_rewards)
       lp = lossFunc( F.softmax(policys,dim=1), target_policys)
       loss = lr+lv+lp
+      """
 
       print(loss)
       #  https://github.com/werner-duvaud/muzero-general/blob/0825bd544fc172a2e2dcc96d43711123222c4a2f/trainer.py
@@ -192,27 +219,21 @@ class MuZero:
       self.model.optimizer.step()
     pass
 
-def get_temperature(num_iter):
-  # as num_iter increases, temperature decreases, and actions become greedier
-  if num_iter < 100: return 3
-  elif num_iter < 200: return 2
-  elif num_iter < 300: return 1
-  elif num_iter < 400: return .5
-  elif num_iter < 500: return .25
-  elif num_iter < 600: return .125
-  else: return .0625
+
 
 env = gym.make('CartPole-v1')
 env = gym.wrappers.RecordEpisodeStatistics(env)
-agent = MuZero(env.observation_space.shape[0], env.action_space.n)
+agent = muzero(env.observation_space.shape[0], env.action_space.n)
 
+
+# self play
 scores, time_step = [], 0
 for epi in range(1000):
   obs = env.reset()
   while True:
 
     #env.render()
-    policy, value, _ = agent.mcts(obs, 1, get_temperature(epi))
+    policy, value, _ = agent.mcts(obs, 100, get_temperature(epi))
     action = np.argmax(policy)
     #action = env.action_space.sample()
 
