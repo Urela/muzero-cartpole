@@ -41,6 +41,9 @@ class muzero:
     self.discount  = 0.95
     self.pb_c_base = 19652
     self.pb_c_init = 1.25
+
+    self.unroll_steps = 10     # number of timesteps to unroll to match action trajectories for each game sample
+    self.bootstrap_steps = 500 # number of timesteps in the future to bootstrap true value
     pass
 
   def ucb_score(self, parent: Node, child: Node, min_max_stats=None) -> float:
@@ -121,61 +124,55 @@ class muzero:
         policy = (policy**(1/temperature)) / (policy**(1/temperature)).sum()
         action_index = np.random.choice( np.arange(len(policy)) , p=policy )
 
-    ## output the final policy
-    #visit_counts = [(action, child.visit_count) for action, child in root.children.items()]
-    #visit_counts = [x[1] for x in sorted(visit_counts)]
-    #av = torch.tensor(visit_counts, dtype=torch.float64)
-    #policy = F.softmax(av, dim=0).detach().numpy()
     return policy, value, root
 
   def train(self, batch_size=100):
-    crossL = nn.CrossEntropyLoss()
-    mse = nn.MSELoss()
-    if(len(self.memory) >= 1):
-      #obs, target_policys, target_rewards, n_obs, target_values = self.memory.sample(batch_size)
-      lossFunc = torch.nn.BCELoss() # binary cross entropy 
-      for game in self.memory.sample(1):
-        lv,lp,lr = 0,0,0
-        gradient_scale = 1
-        num_unroll_steps = 5
-        for i in range(0, num_unroll_steps+1):
-          state = self.model.ht(game.obss[i])
+    mse = nn.MSELoss() # mean squard error
+    bce = nn.BCELoss() # binary cross entropy 
+    cre = nn.CrossEntropyLoss()
+    if(len(self.memory) >= batch_size):
+
+      # for every game in sample batch, unroll and update network weights 
+      loss = 0
+      for game in self.memory.sample(batch_size):
+
+        game_length = len(game.rewards)
+        index = np.random.choice(range(game_length)) # sampled index
+        state = self.model.ht(game.obss[index])
+        # note we don't call the prediction function on the initial hidden state representation given by the representation function,
+        # since there's no associating predicted transition reward to match the true transition reward
+        # this is because we don't / shouldn't have access to the previous action that lead to the initial state
+
+        if(index+self.unroll_steps < game_length): 
+          unroll_steps = self.unroll_steps
+        else: unroll_steps = game_length-1-index
+
+        for i in range(index, index+unroll_steps ):
+          ### get predictions ###
           policy, value  = self.model.ft(state)
           reward, nstate = self.model.gt( torch.cat([state, policy],dim=0) )
 
-          #print( policy, torch.tensor(game.policys[i]))
-          lr += (reward - game.rewards[i]) **2
-          lv += (value - game.values[i]) **2
-          lp += crossL( policy, torch.tensor(game.policys[i]))* gradient_scale
+          ### make targets ###
 
+          # bootstrap using transition rewards and mcts value for final bootstrapped time step
+          if( game_length - i -1) >= self.bootstrap_steps:
+            true_value = sum([ game.rewards[j] * (self.discount**(j-index) ) for j in range(index, index+self.bootstrap_steps) ]) 
+            true_value += game.values[index + self.bootstrap_steps] * ( self.discount**(self.bootstrap_steps) )
+          else: # don't bootstrap; use only transition rewards until termination
+            true_value = sum([ game.rewards[j] * ( self.discount**(j-index) ) for j in range(index,game_length) ])
 
-          #print(value, game.values[i]) 
-          #print(reward, game.rewards[i]) 
-          #lr += mse(reward, game.rewards[i]) * gradient_scale
-          #lv += mse(value,  game.values[i]) * gradient_scale
-          #lp += crossL( policy, game.policys[i])* gradient_scale
+          true_reward = game.rewards[index]   # since game.reward_history is shifted, this transition reward is actually at time step (start_index+1)
+          true_policy = game.policys[index+1] # we need to match the pred_policy at time step (start_index+1) so we need to actually index game.policy_history at (start_index+1)
 
-      loss = lr+lv+lp
-      print(loss)
+          ### calculate loss ###
+          #loss += (1/unroll_steps) * ( mse(true_reward,reward) + mse(true_value,value) + bce(true_policy,policy) ) # take the average loss among all unroll steps
+          loss += (1/unroll_steps) * ( (true_reward-reward)**2 + (true_value-value)**2 + cre(torch.tensor(true_policy),policy) ) # take the average loss among all unroll steps
 
-      """
-        # first we get the hidden state representation using the representation function
-        # then we iteratively feed the hidden state into the dynamics function with the corresponding action, as well as feed the hidden state into the prediction function
-        # we then match these predicted values to the true values
-        # note we don't call the prediction function on the initial hidden state representation given by the representation function, since there's no associating predicted transition reward to match the true transition reward
-        # this is because we don't / shouldn't have access to the previous action that lead to the initial state
-
-      # First we get hidden state using the representation function
-      # then we iteratilvely feed the hidden states into the dynamics function with the corresponding policies as well as feed the hidden states into the prediction function
-
-      loss = lr+lv+lp
-      print(loss)
-      """
-      #  https://github.com/werner-duvaud/muzero-general/blob/0825bd544fc172a2e2dcc96d43711123222c4a2f/trainer.py
-      self.model.optimizer.zero_grad()
-      loss.backward()
-      torch.nn.utils.clip_grad_norm_(self.model.parameters(),1)
-      self.model.optimizer.step()
+      if loss >0:
+        print(loss)
+        self.model.optimizer.zero_grad()
+        loss.backward()
+        self.model.optimizer.step()
     pass
 
 
@@ -205,7 +202,7 @@ for epi in range(1000):
     game.policys.append(policy)
 
     obs = n_obs
-    agent.train()
+    agent.train(1)
 
     if "episode" in info.keys(): 
       scores.append(int(info['episode']['r']))
