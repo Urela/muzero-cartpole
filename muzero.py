@@ -5,69 +5,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from network import Network
+from utils import *
         
 device = "cpu"
-def get_temperature(num_iter):
-  # as num_iter increases, temperature decreases, and actions become greedier
-  if num_iter < 100: return 3
-  elif num_iter < 200: return 2
-  elif num_iter < 300: return 1
-  elif num_iter < 400: return .5
-  elif num_iter < 500: return .25
-  elif num_iter < 600: return .125
-  else: return .0625
 
-class MinMaxStats(object):
-  """A class that holds the min-max values of the tree."""
-
-  def __init__(self):
-    self.maximum = -float('inf')
-    self.minimum = float('inf')
-
-  def update(self, value: float):
-    self.maximum = max(self.maximum, value)
-    self.minimum = min(self.minimum, value)
-
-  def normalize(self, value: float) -> float:
-    if self.maximum > self.minimum:
-      # We normalize only when we have set the maximum and minimum values.
-      return (value - self.minimum) / (self.maximum - self.minimum)
-    return value
-
-class ReplayBuffer():
-  def __init__(self, obs_dim, act_dim, length=1000, device=device):
-    self.states  = np.zeros((length, obs_dim))
-    self.actions = np.zeros((length, act_dim))
-    self.rewards = np.zeros(length)
-    self.nstates = np.zeros((length, obs_dim))
-    self.values  = np.zeros(length)
-    self.size = length
-    self.idx  = 0
-
-  def __len__(self): return self.idx
-
-  def store(self,obs,policy,reward,n_obs,value):
-    idx = self.idx % self.size
-    self.idx += 1
-
-    self.states[idx]  = obs
-    self.actions[idx] = policy
-    self.rewards[idx] = reward
-    self.nstates[idx] = n_obs
-    self.values[idx]  = value
-
-  def sample(self, batch_size=100):
-    indices = np.random.choice(self.size, size=batch_size, replace=False)
-    states  = torch.tensor( self.states[indices] , dtype=torch.float).to(device)
-    actions = torch.tensor( self.actions[indices], dtype=torch.float).to(device)
-    rewards = torch.tensor( self.rewards[indices], dtype=torch.float).to(device)
-    nstates = torch.tensor( self.nstates[indices], dtype=torch.float).to(device)
-    values  = torch.tensor( self.values[indices], dtype=torch.float).to(device)
-    return states, actions, rewards, nstates, values
-
-"""
-A class that represents the nodes used in Monte Carlo Tree Search.
-"""
 class Node:
   def __init__(self, prior: float):
       self.prior = prior       # prior policy's probabilities
@@ -95,7 +36,7 @@ class muzero:
   def __init__(self, in_dims, out_dims):
     super(muzero, self).__init__()
     self.model = Network(in_dims, out_dims)
-    self.memory = ReplayBuffer(in_dims, out_dims)
+    self.memory = ReplayBuffer()
     self.MinMaxStats = MinMaxStats()
     self.discount  = 0.95
     self.pb_c_base = 19652
@@ -165,53 +106,71 @@ class muzero:
 
       # update the state with "backpropagate"
       for bnode in reversed(search_path):
-        bnode.value_sum += value #if root.to_play == bnode.to_play else -value
         bnode.visit_count += 1
-        #min_max_stats.update(node.value())
+        bnode.value_sum += value #if root.to_play == bnode.to_play else -value
+        self.MinMaxStats.update(node.value())
         value = bnode.reward + self.discount * value
 
-    # output the final policy
-    visit_counts = [(action, child.visit_count) for action, child in root.children.items()]
-    visit_counts = [x[1] for x in sorted(visit_counts)]
-    av = torch.tensor(visit_counts, dtype=torch.float64)
-    policy = F.softmax(av, dim=0).detach().numpy()
+    # SAMPLE an action proportional to the visit count of the child nodes of the root node
+    total_num_visits = sum([ child.visit_count for action, child in root.children.items() ])
+    policy = np.array( [ child.visit_count/total_num_visits for action, child in root.children.items()])
+
+    if temperature == None: # take the greedy action (to be used during test time)
+        action_index = np.argmax(policy)
+    else: # otherwise sample (to be used during training)
+        policy = (policy**(1/temperature)) / (policy**(1/temperature)).sum()
+        action_index = np.random.choice( np.arange(len(policy)) , p=policy )
+
+    ## output the final policy
+    #visit_counts = [(action, child.visit_count) for action, child in root.children.items()]
+    #visit_counts = [x[1] for x in sorted(visit_counts)]
+    #av = torch.tensor(visit_counts, dtype=torch.float64)
+    #policy = F.softmax(av, dim=0).detach().numpy()
     return policy, value, root
 
-  def train(self, batch_size=128):
-    lossfunc = nn.CrossEntropyLoss()
-    if(len(self.memory) >= 256):
-      obs, target_policys, target_rewards, n_obs, target_values = self.memory.sample(batch_size)
+  def train(self, batch_size=100):
+    crossL = nn.CrossEntropyLoss()
+    mse = nn.MSELoss()
+    if(len(self.memory) >= 1):
+      #obs, target_policys, target_rewards, n_obs, target_values = self.memory.sample(batch_size)
       lossFunc = torch.nn.BCELoss() # binary cross entropy 
+      for game in self.memory.sample(1):
+        lv,lp,lr = 0,0,0
+        gradient_scale = 1
+        num_unroll_steps = 5
+        for i in range(0, num_unroll_steps+1):
+          state = self.model.ht(game.obss[i])
+          policy, value  = self.model.ft(state)
+          reward, nstate = self.model.gt( torch.cat([state, policy],dim=0) )
 
-      lv,lp,lr = 0,0,0
-      gradient_scale = 1
-      num_unroll_steps = 5
-      for i in range(0, num_unroll_steps+1):
-        if i > 0:
-          gradient_scale = 1/(num_unroll_steps)
-          #values, rewards, policy_logits, states = network.recurrent_inference(states, actions[:,i-1].unsqueeze(-1))
-          #hidden_states.register_hook(lambda grad: grad*0.5)
-        states = self.model.ht(obs[i])
-        policys, values  = self.model.ft(states)
-        rewards, nstates = self.model.gt( torch.cat([states, policys],dim=0) )
+          #print( policy, torch.tensor(game.policys[i]))
+          lr += (reward - game.rewards[i]) **2
+          lv += (value - game.values[i]) **2
+          lp += crossL( policy, torch.tensor(game.policys[i]))* gradient_scale
 
-        lv += lossFunc( F.softmax(values, dim=0), target_values[i]) * gradient_scale
-        lr += lossFunc( F.softmax(rewards,dim=0), target_rewards[i])* gradient_scale
-        lp += lossFunc( F.softmax(policys,dim=0), target_policys[i,:])* gradient_scale
+
+          #print(value, game.values[i]) 
+          #print(reward, game.rewards[i]) 
+          #lr += mse(reward, game.rewards[i]) * gradient_scale
+          #lv += mse(value,  game.values[i]) * gradient_scale
+          #lp += crossL( policy, game.policys[i])* gradient_scale
+
       loss = lr+lv+lp
-      """
-
-      states = self.model.ht(obs)
-      policys, values  = self.model.ft(states)
-      rewards, nstates = self.model.gt( torch.cat([states, policys],dim=1) )
-
-      lv = lossFunc( F.softmax(values, dim=0), target_values)
-      lr = lossFunc( F.softmax(rewards,dim=0), target_rewards)
-      lp = lossFunc( F.softmax(policys,dim=1), target_policys)
-      loss = lr+lv+lp
-      """
-
       print(loss)
+
+      """
+        # first we get the hidden state representation using the representation function
+        # then we iteratively feed the hidden state into the dynamics function with the corresponding action, as well as feed the hidden state into the prediction function
+        # we then match these predicted values to the true values
+        # note we don't call the prediction function on the initial hidden state representation given by the representation function, since there's no associating predicted transition reward to match the true transition reward
+        # this is because we don't / shouldn't have access to the previous action that lead to the initial state
+
+      # First we get hidden state using the representation function
+      # then we iteratilvely feed the hidden states into the dynamics function with the corresponding policies as well as feed the hidden states into the prediction function
+
+      loss = lr+lv+lp
+      print(loss)
+      """
       #  https://github.com/werner-duvaud/muzero-general/blob/0825bd544fc172a2e2dcc96d43711123222c4a2f/trainer.py
       self.model.optimizer.zero_grad()
       loss.backward()
@@ -230,15 +189,20 @@ agent = muzero(env.observation_space.shape[0], env.action_space.n)
 scores, time_step = [], 0
 for epi in range(1000):
   obs = env.reset()
+  game = Game(obs)
   while True:
-
     #env.render()
     policy, value, _ = agent.mcts(obs, 100, get_temperature(epi))
     action = np.argmax(policy)
     #action = env.action_space.sample()
 
     n_obs, reward, done, info = env.step(action)
-    agent.memory.store(obs,policy,reward,n_obs,value)
+
+    game.obss.append(obs)
+    game.rewards.append(reward)
+    game.actions.append( np.array([1 if i==action else 0 for i in range(len(policy))]).reshape(1,-1) )
+    game.values.append(value)
+    game.policys.append(policy)
 
     obs = n_obs
     agent.train()
@@ -248,3 +212,4 @@ for epi in range(1000):
       avg_score = np.mean(scores[-100:]) # moving average of last 100 episodes
       print(f"Episode {epi}, Return: {scores[-1]}, Avg return: {avg_score}")
       break
+  agent.memory.store(game)

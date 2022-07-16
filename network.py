@@ -43,13 +43,13 @@ class Network(nn.Module):
     x = self.dyn_input(state_action)
     reward = F.relu(self.dyn_reward(x))
     nstate = F.relu(self.dyn_nstate(x))
-    return reward.squeeze().detach(), nstate
+    return reward.item(), nstate
 
   def ft(self, state):    
     x = self.pred_input(state)
     value  = F.relu(self.pred_value(x))
     policy = F.relu(self.pred_policy(x))
-    return policy, value.squeeze()
+    return policy, value.item()
 
 if __name__ == '__main__':
   import gym
@@ -66,7 +66,7 @@ if __name__ == '__main__':
       rew, nstate = mm.gt( torch.cat([state, policy],dim=0) )
 
       action = policy.argmax().detach().numpy()
-      #print(value )
+      #print(value , rew)
       #action, rew = env.action_space.sample(), 0
 
       n_obs, reward, done, _ = env.step(action)
