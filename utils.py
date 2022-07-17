@@ -42,7 +42,7 @@ class Game():
     self.values  = [] # starts at t = 0 (from MCTS)
     self.policys = [] # starts at t = 0 (from MCTS)
     self.actions = [] # starts at t = 0
-  def store(self,obs,state,reward,value,action,policy):
+  def store(self,obs,reward,value,action,policy):
     self.obss.append(obs)
     self.rewards.append(reward)
     self.values.append(value)
