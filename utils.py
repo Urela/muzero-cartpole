@@ -1,22 +1,15 @@
-
 import gym
 import math
 import numpy as np 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from network import Network
-from utils import *
 device = "cpu"
-def get_temperature(num_iter):
-  # as num_iter increases, temperature decreases, and actions become greedier
-  if num_iter < 100: return 3
-  elif num_iter < 200: return 2
-  elif num_iter < 300: return 1
-  elif num_iter < 400: return .5
-  elif num_iter < 500: return .25
-  elif num_iter < 600: return .125
-  else: return .0625
+
+def softmax(x):
+  """Compute softmax values for each sets of scores in x."""
+  e_x = np.exp(x - np.max(x))
+  return e_x / e_x.sum()
 
 class MinMaxStats(object):
   """A class that holds the min-max values of the tree."""
