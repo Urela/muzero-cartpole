@@ -6,6 +6,15 @@ import torch.nn as nn
 import torch.nn.functional as F
 device = "cpu"
 
+def get_temperature(episodes):
+  # as episodes increases, temperature decreases, and actions become greedier
+  if episodes < 250: return 1
+  elif episodes < 300: return 0.75
+  elif episodes < 400: return 0.65
+  elif episodes < 500: return 0.55
+  elif episodes < 600: return 0.3
+  else: return 0.25
+
 def softmax(x):
   """Compute softmax values for each sets of scores in x."""
   e_x = np.exp(x - np.max(x))
@@ -31,29 +40,89 @@ class MinMaxStats(object):
 class Game():
   def __init__(self, start_obs):
     self.obss  = [start_obs]
-    self.rewards = [] # starts at t = 1 (the transition reward for reaching state 1)
-    self.values  = [] # starts at t = 0 (from MCTS)
-    self.policys = [] # starts at t = 0 (from MCTS)
     self.actions = [] # starts at t = 0
-  def store(self,obs,reward,value,action,policy):
+    self.rewards = [] # starts at t = 1 (the transition reward for reaching state 1)
+    self.dones   = []
+    self.policys = [] # starts at t = 0 (from MCTS)
+    self.values  = [] # starts at t = 0 (from MCTS)
+  def store(self,obs,action,reward,done,policy,value):
     self.obss.append(obs)
-    self.rewards.append(reward)
-    self.values.append(value)
-    self.policys.append(policy)
     self.actions.append(action)
+    self.rewards.append(reward)
+    self.dones.append(done)
+    self.policys.append(policy)
+    self.values.append(value)
+  def __len__(self): return len(self.rewards)
 
 class ReplayBuffer():
-  def __init__(self, size=1000):
+  def __init__(self, size, num_actions):
+    self.size = size
     self.buffer = [] # list of Game objects, that contain the state, action, reward, MCTS policy, and MCTS value history
-    self.buffer_size = size
+    self.num_actions = num_actions
 
   def __len__(self): return len(self.buffer)
 
   def store(self, game):
-    if len(self.buffer) >= self.buffer_size: self.buffer.pop(0)
+    if len(self.buffer) >= self.size: self.buffer.pop(0)
     self.buffer.append(game)
-  def sample(self, batch_size=100): # sample a number of games from self.buffer, specified by the config parameter
-    if len(self.buffer) <= batch_size: 
-      return self.buffer.copy()
-    return np.random.choice(self.buffer, size=batch_size,replace=False).tolist()
+
+  def _sample(self, unroll_steps, n, discount):
+    #  n = n-step-return 
+    # select trajectory
+    index = np.random.choice(range(len(self.buffer))) # sampled index
+    game_length = len(self.buffer[index]) # get the length of a game
+    last_index  = game_length - 1
+
+    # select start index to unroll
+    start_index = np.random.choice(game_length)
+
+    ## fill in the data
+    OBS = self.buffer[index].obss[start_index]
+    VALUES, REWARDS, POLICYS, ACTIONS = [],[],[],[]
+
+    for step in range(start_index, start_index+unroll_steps+1 ):
+      n_index = step + n
+      if n_index >= game_length:
+        value = torch.tensor([0]).float().to(device)
+      else: value = self.buffer[index].values[n_index] * (discount ** n) # discount value
+
+      # add discounted rewards until step n or end of episode
+      last_valid_index = np.minimum(last_index, n_index)
+      for i, reward in enumerate(self.buffer[index].rewards[step:last_valid_index]):
+      #for i, reward in enumerate(self.memory[memory_index]["rewards"][step::]): # rewards until end of episode
+        value += reward * (discount ** i)
+      VALUES.append(value)
+
+      # only add when not inital step | dont need reward for step 0
+      if step != start_index:
+        if step > 0 and step <= last_index:
+          REWARDS.append( self.buffer[index].rewards[step-1] ) 
+        else: REWARDS.append( torch.tensor([0]).to(device) ) 
+
+      # add policy
+      if step > 0 and step <= last_index:
+        POLICYS.append( self.buffer[index].policys[step] ) 
+      else: 
+        #for mse loss
+        POLICYS.append( torch.tensor(np.repeat(1,self.num_actions)/self.num_actions)) 
+
+        #for cross entropy loss
+        #POLICYS.append( torch.tensor(np.repeat(1,self.num_actions)/0)) 
+
+    # unroll steps beyond trajectory then fill in the remaining (random) actions
+    last_valid_index = np.minimum(last_index - 1, start_index + unroll_steps - 1)
+    num_steps = last_valid_index - start_index
+
+    # real
+    ACTIONS = self.buffer[index].actions[start_index:start_index+num_steps+1]
+   
+    # fills
+    for _ in range(unroll_steps - num_steps + 1):
+      ACTIONS.append(np.random.choice(np.arange(self.num_actions)))
+    return OBS, ACTIONS, REWARDS, POLICYS, VALUES, 
+
+  def sample(self, unroll_steps, n, discount, batch_size=100):
+    #OBS, ACTIONS, REWARDS, POLICYS, VALUES, 
+    data = [ (self._sample(unroll_steps,n,discount)) for _ in range(batch_size)]
+    return data
 
