@@ -97,14 +97,14 @@ class ReplayBuffer():
       if step != start_index:
         if step > 0 and step <= last_index:
           REWARDS.append( self.buffer[index].rewards[step-1] ) 
-        else: REWARDS.append( torch.tensor([0]).to(device) ) 
+        else: REWARDS.append( 0 ) 
 
       # add policy
       if step > 0 and step <= last_index:
         POLICYS.append( self.buffer[index].policys[step] ) 
       else: 
         #for mse loss
-        POLICYS.append( torch.tensor(np.repeat(1,self.num_actions)/self.num_actions)) 
+        POLICYS.append( np.repeat(1,self.num_actions)/self.num_actions ) 
 
         #for cross entropy loss
         #POLICYS.append( torch.tensor(np.repeat(1,self.num_actions)/0)) 
