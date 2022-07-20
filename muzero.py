@@ -157,8 +157,11 @@ class muzero:
           true_value = torch.tensor(true_value).float() 
 
           ### calculate loss ###
-          #loss += (1/unroll_steps) * ( mse(true_reward,reward) + mse(true_value,value) + bce(true_policy,policy) ) # take the average loss among all unroll steps
-          loss += (1/unroll_steps) * ( (true_reward-reward)**2 + (true_value-value)**2 + mse(torch.tensor(true_policy),policy) ) # take the average loss among all unroll steps
+          #print( true_reward,reward)
+          #print( true_value,value) 
+          #print(true_policy,policy)  # take the average loss among all unroll steps
+          loss += (1/unroll_steps) * ( mse(true_reward,torch.tensor(reward)) + mse(true_value,torch.tensor(value)) + mse(true_policy,policy) ) # take the average loss among all unroll steps
+          #loss += (1/unroll_steps) * ( (true_reward-reward)**2 + (true_value-value)**2 + mse(torch.tensor(true_policy),policy) ) # take the average loss among all unroll steps
 
 
       self.model.optimizer.zero_grad()
