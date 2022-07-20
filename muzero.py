@@ -12,11 +12,8 @@ device = "cpu"
 class Node:
   def __init__(self, prior: float):
       self.prior = prior       # prior policy's probabilities
-
-      self.reward = 0           # from dynamics function
-      self.pred_policy = None   # from prediction function
-      self.pred_value = None    # from prediction function
       self.hidden_state = None  # from dynamics function
+      self.reward = 0           # from dynamics function
 
       self.children = {}
       self.value_sum = 0    
@@ -46,31 +43,24 @@ class muzero:
     self.bootstrap_steps = 500 # number of timesteps in the future to bootstrap true value
     pass
 
-  def ucb_score(self, parent: Node, child: Node, min_max_stats=None) -> float:
-    """
-    Calculate the modified UCB score of this Node. This value will be used when selecting Nodes during MCTS simulations.
-    The UCB score balances between exploiting Nodes with known promising values, and exploring Nodes that haven't been 
-    searched much throughout the MCTS simulations.
-    """
-    self.pb_c = math.log((parent.visit_count + self.pb_c_base + 1) / self.pb_c_base) + self.pb_c_init
-    self.pb_c *= math.sqrt(parent.visit_count) / (child.visit_count + 1)
+  def ucb_score(self, parent: Node, child: Node) -> float:
+    pb_c  = math.log((parent.visit_count + self.pb_c_base + 1) / self.pb_c_base) + self.pb_c_init
+    pb_c *= math.sqrt(parent.visit_count) / (child.visit_count + 1)
 
-    prior_score = self.pb_c * child.prior
+    prior_score = pb_c * child.prior
     value_score = 0
     if child.visit_count > 0:
-      if min_max_stats is not None:
-        value_score = child.reward + self.discount * min_max_stats.normalize(child.value())
-      else: value_score = child.reward + self.discount * child.value()
+      value_score = child.reward + self.discount * self.MinMaxStats.normalize(child.value())
     return (prior_score + value_score).detach().numpy()
 
   def select_child(self, node: Node):
     total_visits_count = max(1 , sum([child.visit_count  for action, child in node.children.items()]) )
-    action_index = np.argmax([self.ucb_score(node,child,self.MinMaxStats) for action, child in node.children.items()])
+    action_index = np.argmax([self.ucb_score(node,child) for action, child in node.children.items()])
     child  = node.children[action_index]
     action = np.array([1 if i==action_index else 0 for i in range(len(node.children))]) #.reshape(1,-1) 
     return action, child
 
-  def mcts(self, obs, num_simulations=10, temperature=None):
+  def mcts(self, obs, num_simulations=10, temperature=1):
 
     # init root node
     root = Node(0) 
@@ -80,7 +70,6 @@ class muzero:
     policy, value = self.model.ft(root.hidden_state)
     for i in range(policy.shape[0]):
       root.children[i] = Node(prior=policy[i])
-      #root.children[i].to_play = -root.to_play
 
     # run mcts
     for _ in range(num_simulations):
@@ -105,7 +94,6 @@ class muzero:
       # create all the children of the newly expanded node
       for i in range(policy.shape[0]):
         node.children[i] = Node(prior=policy[i])
-        #node.children[i].to_play = -node.to_play
 
       # update the state with "backpropagate"
       for bnode in reversed(search_path):
@@ -118,12 +106,9 @@ class muzero:
     total_num_visits = sum([ child.visit_count for action, child in root.children.items() ])
     policy = np.array( [ child.visit_count/total_num_visits for action, child in root.children.items()])
 
-    if temperature == None: # take the greedy action (to be used during test time)
-        action_index = np.argmax(policy)
-    else: # otherwise sample (to be used during training)
-        policy = (policy**(1/temperature)) / (policy**(1/temperature)).sum()
-        action_index = np.random.choice( np.arange(len(policy)) , p=policy )
-
+    # otherwise sample (to be used during training)
+    policy = (policy**(1/temperature)) / (policy**(1/temperature)).sum()
+    action_index = np.random.choice( np.arange(len(policy)) , p=policy )
     return policy, value, root
 
   def train(self, batch_size=100):
@@ -133,7 +118,7 @@ class muzero:
     if(len(self.memory) >= batch_size):
 
       # for every game in sample batch, unroll and update network weights 
-      loss = 0
+      loss = torch.tensor(0).float()
       for game in self.memory.sample(batch_size):
 
         game_length = len(game.rewards)
@@ -165,19 +150,21 @@ class muzero:
           # don't bootstrap; use only transition rewards until termination
           else: true_value = sum([ game.rewards[j] * ( self.discount**(j-i) ) for j in range(i, game_length) ])
 
-          true_reward = game.rewards[i]   # since game.reward_history is shifted, this transition reward is actually at time step (start_index+1)
-          true_policy = game.policys[i+1] # we need to match the pred_policy at time step (start_index+1) so we need to actually index game.policy_history at (start_index+1)
+          # since game.reward_history is shifted, this transition reward is actually at time step (start_index+1)
+          true_reward = torch.tensor(game.rewards[i]).float()   
+          # we need to match the pred_policy at time step (start_index+1) so we need to actually index game.policy_history at (start_index+1)
+          true_policy = torch.tensor(game.policys[i+1]).float() 
+          true_value = torch.tensor(true_value).float() 
 
           ### calculate loss ###
           #loss += (1/unroll_steps) * ( mse(true_reward,reward) + mse(true_value,value) + bce(true_policy,policy) ) # take the average loss among all unroll steps
-          loss += (1/unroll_steps) * ( (true_reward-reward)**2 + (true_value-value)**2 + cre(torch.tensor(true_policy),policy) ) # take the average loss among all unroll steps
+          loss += (1/unroll_steps) * ( (true_reward-reward)**2 + (true_value-value)**2 + mse(torch.tensor(true_policy),policy) ) # take the average loss among all unroll steps
 
-      if loss >0:
-        print(loss)
-        self.model.optimizer.zero_grad()
-        torch.nn.utils.clip_grad_norm_(self.model.parameters(),1)
-        loss.backward()
-        self.model.optimizer.step()
+
+      self.model.optimizer.zero_grad()
+      #torch.nn.utils.clip_grad_norm_(self.model.parameters(),1)
+      loss.backward()
+      self.model.optimizer.step()
     pass
 
 
@@ -194,14 +181,14 @@ for epi in range(1000):
   game = Game(obs)
   while True:
     #env.render()
-    policy, value, _ = agent.mcts(obs, 10, get_temperature(epi))
+    policy, value, _ = agent.mcts(obs, 100, get_temperature(epi))
     action = np.argmax(policy)
     #action = env.action_space.sample()
 
     n_obs, reward, done, info = env.step(action)
 
     action = np.array([1 if i==action else 0 for i in range(len(policy))]).reshape(1,-1) 
-    game.store(obs,reward,value,action,policy)
+    game.store(obs,action,reward,done,policy,value)
 
     obs = n_obs
     agent.train(10)
