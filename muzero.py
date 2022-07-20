@@ -31,7 +31,7 @@ class Node:
 class muzero:
   def __init__(self, in_dims, out_dims):
     super(muzero, self).__init__()
-    hid_dims = 10
+    hid_dims = 50
     self.model = Network(in_dims,hid_dims,out_dims)
 
     self.memory = ReplayBuffer(100, out_dims)
@@ -138,10 +138,10 @@ class muzero:
       unroll_steps = 5
       reward_coef = 1
       value_coef = 1
-      #for i in range(16):
-      for i in range(1):
+      n = 10
+      for i in range(16):
         self.model.optimizer.zero_grad()
-        data = self.memory.sample(10,unroll_steps,self.discount, batch_size)
+        data = self.memory.sample(unroll_steps, n, self.discount, batch_size)
 
         ## network unroll data
         obs = torch.stack([torch.flatten(torch.tensor(data[i][0])) for i in range(batch_size)]).to(device).float()#.to(dtype) # flatten when insert into mem
@@ -178,6 +178,7 @@ class muzero:
           reward_loss = mse(rewards, rewards_target[:,step-1].detach())
           loss += ( policy_loss + value_coef * value_loss + reward_coef * reward_loss) / unroll_steps
 
+        #print(loss)
         loss.backward()
         self.model.optimizer.step() 
 
@@ -194,7 +195,7 @@ for epi in range(2000):
 
   while True:
     #env.render()
-    policy, value, _ = agent.mcts(obs, 10, get_temperature(epi))
+    policy, value, _ = agent.mcts(obs, 20, get_temperature(epi))
     action = np.argmax(policy)
     #action = env.action_space.sample()
 
@@ -202,7 +203,7 @@ for epi in range(2000):
     game.store(obs,action,reward,done,policy,value)
 
     obs = n_obs
-    agent.train(10)
+    agent.train(32)
 
     if "episode" in info.keys(): 
       scores.append(int(info['episode']['r']))
