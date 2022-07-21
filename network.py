@@ -1,3 +1,4 @@
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -53,14 +54,14 @@ class Network(nn.Module):
 
   def gt(self, x):
     out = self.dynamics(x)
-    reward = out[:, -1]
-    nstate = out[:, 0:self.hid_dims]
+    reward = out[:,-1]
+    nstate = out[:,0:self.hid_dims]
     return reward, nstate
 
   def ft(self, x):
     out = self.prediction (x)
-    value  = out[:, -1]
-    policy = out[:, 0:self.out_dims]
+    value  = out[:,-1]
+    policy = out[:,0:self.out_dims]
     policy = F.softmax(policy, dim=1)
     return policy, value
 
@@ -77,12 +78,12 @@ if __name__ == '__main__':
     score, _score = 0, 0
     obs,done = env.reset(), False
     while not done:
-      state = mm.ht( [obs] )
+      state = mm.ht( np.array([obs]) )
       policy, value = mm.ft( state )
       action = policy.argmax().detach().numpy()
       rew, nstate = mm.gt( torch.cat([state, policy],dim=1) )
-
-      #print(value , rew)
+      ##print(value.item(), rew.item())
+      print(state,policy)
       #action, rew = env.action_space.sample(), 0
 
       n_obs, reward, done, _ = env.step(action)
