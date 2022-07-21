@@ -160,10 +160,15 @@ class muzero:
           #print( true_reward,reward)
           #print( true_value,value) 
           #print(true_policy,policy)  # take the average loss among all unroll steps
-          loss += (1/unroll_steps) * ( mse(true_reward,torch.tensor(reward)) + mse(true_value,torch.tensor(value)) + mse(true_policy,policy) ) # take the average loss among all unroll steps
-          #loss += (1/unroll_steps) * ( (true_reward-reward)**2 + (true_value-value)**2 + mse(torch.tensor(true_policy),policy) ) # take the average loss among all unroll steps
+          loss += (1/unroll_steps) * ( mse(true_reward,torch.tensor(reward)) + \
+                                       mse(true_value,torch.tensor(value)) + \
+                                       cre(true_policy,policy) ) # take the average loss among all unroll steps
+          #loss += (1/unroll_steps) * ( (true_reward-reward)**2 + \
+          #                             (true_value-value)**2 +   \
+          #                             mse(torch.tensor(true_policy),policy) ) # take the average loss among all unroll steps
 
 
+      print(loss)
       self.model.optimizer.zero_grad()
       #torch.nn.utils.clip_grad_norm_(self.model.parameters(),1)
       loss.backward()
@@ -187,10 +192,9 @@ for epi in range(1000):
     policy, value, _ = agent.mcts(obs, 100, get_temperature(epi))
     action = np.argmax(policy)
     #action = env.action_space.sample()
-
     n_obs, reward, done, info = env.step(action)
 
-    action = np.array([1 if i==action else 0 for i in range(len(policy))]).reshape(1,-1) 
+    #action = np.array([1 if i==action else 0 for i in range(len(policy))]).reshape(1,-1) 
     game.store(obs,action,reward,done,policy,value)
 
     obs = n_obs
