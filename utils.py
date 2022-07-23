@@ -13,23 +13,6 @@ def get_temperature(episodes):
   elif episodes < 600: return 0.3
   else: return 0.25
 
-#class MinMaxStats(object):
-#  """A class that holds the min-max values of the tree."""
-#
-#  def __init__(self):
-#    self.maximum = -float('inf')
-#    self.minimum = float('inf')
-#
-#  def update(self, value: float):
-#    self.maximum = max(self.maximum, value)
-#    self.minimum = min(self.minimum, value)
-#
-#  def normalize(self, value: float) -> float:
-#    if self.maximum > self.minimum:
-#      # We normalize only when we have set the maximum and minimum values.
-#      return (value - self.minimum) / (self.maximum - self.minimum)
-#    return value
-
 class MinMaxStats():
   def __init__(self):
     self.max = - np.inf
@@ -51,7 +34,6 @@ class stack_observations:
     self.history_length = history_length
   def __call__(self,obs):
     self.obs_stack.append(obs)
-    #features = np.array(self.obs_stack)
     features = np.zeros((self.history_length, len(obs)))
     
     # features 
@@ -97,33 +79,14 @@ class ReplayBuffer():
     sample["obs"], sample["pi"], sample["v"], sample["actions"], sample["rewards"], sample["return"] = [],[],[],[],[],[]
 
     # select trajectory
-    #mem_idx = np.random.choice(range(len(self.buffer))) # sampled index
-    mem_idx = np.random.choice(len(self.buffer),1)[0]
+    mem_idx = np.random.choice(range(len(self.buffer))) # sampled index
 
     game_length = len(self.buffer[mem_idx]) # get the length of a game
     game_last_index = game_length - 1
 
     # select start index to unroll and fill data
-    #start_index = np.random.choice(game_length)
-    start_index = np.random.choice(game_length, 1)[0]
+    start_index = np.random.choice(game_length)
 
-    #print("start_index", start_index, "game_length", game_length)
-    #print( len(self.buffer[mem_idx].obs) )
-    #print( len(self.buffer[mem_idx].actions) )
-    #print( len(self.buffer[mem_idx].rewards) )
-    #print( len(self.buffer[mem_idx].values) )
-    #print( len(self.buffer[mem_idx].policys) )
-    #print("------------------")
-
-    #print("start_index", start_index, "game_length", game_length)
-    #print( self.buffer[mem_idx].obs )
-    #print( self.buffer[mem_idx].actions) 
-    #print( self.buffer[mem_idx].rewards) 
-    #print( self.buffer[mem_idx].values) 
-    #print( self.buffer[mem_idx].policys) 
-    #print("------------------")
-
-    #print(start_index)
     sample["obs"] = self.buffer[mem_idx].obs[start_index]
 
     # compute n-step return for every unroll step, rewards and pi
@@ -158,7 +121,6 @@ class ReplayBuffer():
     # unroll steps beyond trajectory then fill in the remaining (random) actions
     last_valid_index = np.minimum(game_last_index - 1, start_index + unroll_steps - 1)
     num_steps = last_valid_index - start_index
-    #print("RRRRRRRRRRR", num_steps , last_valid_index,  start_index,)
     
     # real
     sample["actions"] = self.buffer[mem_idx].actions[start_index:start_index+num_steps+1]
@@ -168,7 +130,6 @@ class ReplayBuffer():
 
     for i in range(num_fills):
       sample["actions"].append(np.random.choice(self.num_actions))
-      #sample["actions"].append(np.random.choice(self.num_actions,1)[0])
 
     
     return sample

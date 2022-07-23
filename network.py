@@ -3,86 +3,110 @@ import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
 
-class Representation_Model(nn.Module):
-    
-    def __init__(self, num_in, num_hidden):
-        super().__init__()
-        
-        self.num_in = num_in
-        self.num_hidden = num_hidden
-        
-        network = [
-            nn.Linear(num_in, 50),
-            nn.ReLU(),
-            nn.Linear(50, 50),
-            nn.ReLU(),
-            nn.Linear(50, 50),
-            nn.ReLU(),
-            nn.Linear(50, 50),
-            nn.ReLU(),
-            nn.Linear(50, num_hidden)
-        ]
-        
-        self.network = nn.Sequential(*network)
-    
-    def forward(self, x):
-        return self.network(x)
+# https://github.com/Hauf3n/MuZero-PyTorch/blob/master/Networks.py
 
-class Dynamics_Model(nn.Module):
-    # action encoding - one hot
-    
-    def __init__(self, num_hidden, num_actions): 
-        super().__init__()
-        
-        self.num_hidden = num_hidden
-        self.num_actions = num_actions
-       
-        network = [
-            nn.Linear(num_hidden + 1, 50), # hidden, action encoding
-            nn.ReLU(),
-            nn.Linear(50, 50),
-            nn.ReLU(),
-            nn.Linear(50, 50),
-            nn.ReLU(),
-            nn.Linear(50, 50),
-            nn.ReLU(),
-            nn.Linear(50, num_hidden + 1) # add reward prediction
-        ]
-        
-        self.network = nn.Sequential(*network)
-    
-    def forward(self, x):
-        out = self.network(x)
-        hidden, reward = out[:, 0:self.num_hidden], out[:, -1]
-        
-        return hidden, reward
+# representation:  s_0 = h(o_1, ..., o_t)
+# dynamics:        r_k, s_k = g(s_km1, a_k)
+# prediction:      p_k, v_k = f(s_k)
 
-class Prediction_Model(nn.Module):
-    
-    def __init__(self, num_hidden, num_actions):
-        super().__init__()
-        
-        self.num_actions = num_actions
-        self.num_hidden = num_hidden
-        
-        network = [
-            nn.Linear(num_hidden, 50),
-            nn.ReLU(),
-            nn.Linear(50, 50),
-            nn.ReLU(),
-            nn.Linear(50, 50),
-            nn.ReLU(),
-            nn.Linear(50, num_actions + 1) # value & policy prediction
-        ]
-        
-        self.network = nn.Sequential(*network)
-    
-    def forward(self, x):
-        out = self.network(x)
-        p = out[:, 0:self.num_actions]
-        v = out[:, -1]
-        
-        # softmax probs
-        p = F.softmax(p, dim=1)
-        #print(p,v)
-        return p, v         
+"""
+Network contains the representation, dynamics and prediction network.
+These networks are trained during agent self-play.
+"""
+device = 'cpu'
+
+class Network(nn.Module):
+  def __init__(self, in_dims, hidden_size, out_dims, lr=1e-3):
+    super().__init__()
+    self.hid_dims = hidden_size
+    self.out_dims = out_dims
+    self.representation = nn.Sequential(
+      nn.Linear(in_dims, 50), nn.ReLU(),
+      nn.Linear(50, 50),      nn.ReLU(),
+      nn.Linear(50, 50),      nn.ReLU(),
+      nn.Linear(50, 50),      nn.ReLU(),
+      nn.Linear(50, hidden_size)
+    ).to(device)
+
+    self.dynamics = nn.Sequential(
+      nn.Linear(hidden_size+1, 50), nn.ReLU(),
+      nn.Linear(50, 50),       nn.ReLU(),
+      nn.Linear(50, 50),       nn.ReLU(),
+      nn.Linear(50, 50),       nn.ReLU(),
+      nn.Linear(50, hidden_size+1) # add reward prediction
+    ).to(device)
+
+    # actor critic network
+    self.prediction = nn.Sequential(
+      nn.Linear(hidden_size, 50), nn.ReLU(),
+      nn.Linear(50, 50),       nn.ReLU(),
+      nn.Linear(50, 50),       nn.ReLU(),
+      nn.Linear(50, 50),       nn.ReLU(),
+      nn.Linear(50, out_dims+1) #  policy & value prediction
+    ).to(device)
+
+    #self.optimizer = optim.Adam(self.parameters(), lr=lr)
+    self.optimizer = optim.Adam(
+      list(self.representation.parameters()) +\
+      list(self.dynamics.parameters()) +\
+      list(self.prediction.parameters()),
+      lr=1e-3
+    )
+
+  def ht(self, x):
+    return self.representation(x)
+
+
+  def gt(self, x):
+    out = self.dynamics(x)
+    reward = out[:, -1]
+    nstate = out[:, 0:self.hid_dims]
+    return nstate, reward
+
+  def ft(self, x):
+    out = self.prediction (x)
+    value  = out[:, -1]
+    policy = out[:, 0:self.out_dims]
+    policy = F.softmax(policy, dim=1)
+    return policy, value
+
+if __name__ == '__main__':
+  import gym
+  from utils import *
+  env = gym.make('CartPole-v1')
+  env = gym.wrappers.RecordEpisodeStatistics(env)
+
+  history_length = 3
+  stack_obs = stack_observations(history_length)
+
+  in_dims  = env.observation_space.shape[0]*history_length
+  out_dims = env.action_space.n
+  hid_dims = 50
+  mm = Network(in_dims,hid_dims,out_dims)
+
+
+  scores = []
+  for epi in range(10):
+    obs = env.reset()
+    obs = stack_obs(obs)
+    while True:
+      state = mm.ht( torch.tensor(obs, dtype=torch.float) )
+      policy, value = mm.ft( state )
+      action = policy.argmax().detach()
+      bb = state.shape[0]
+      _action = torch.tensor(action,dtype=torch.float).reshape(bb,1) / out_dims
+      rew, nstate = mm.gt( torch.cat([state, _action],dim=1) )
+
+      obs, reward, done, info = env.step(action.numpy())
+      obs = stack_obs(obs)
+
+      if "episode" in info.keys(): 
+        scores.append(int(info['episode']['r']))
+        avg_score = np.mean(scores[-100:]) # moving average of last 100 episodes
+        print(f"Episode {epi}, Return: {scores[-1]}, Avg return: {avg_score}")
+        break
+
+  env.close()
+
+
+

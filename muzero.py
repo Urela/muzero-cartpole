@@ -8,21 +8,23 @@ import numpy as np
 
 from network import *
 from utils import *
+
 device = "cpu"
+
 class Node:
   def __init__(self, prior: float):
-      self.prior = prior       # prior policy's probabilities
-      self.hidden_state = None 
-      self.reward = 0           
+    self.prior = prior       # prior policy's probabilities
+    self.hidden_state = None 
+    self.reward = 0           
 
-      self.children = {}
-      self.value_sum = 0    
-      self.visit_count = 0
+    self.children = {}
+    self.value_sum = 0    
+    self.visit_count = 0
 
   # mean Q-value of this node
   def value(self) -> float:
     if self.visit_count == 0:
-        return 0
+      return 0
     return self.value_sum / self.visit_count
 
   def expanded(self) -> bool:
@@ -32,16 +34,8 @@ class muzero:
   def __init__(self, in_dims, out_dims):
     super(muzero, self).__init__()
     hid_dims = 50
-    self.ht = Representation_Model(in_dims, hid_dims).to(device)
-    self.gt = Dynamics_Model(hid_dims, out_dims).to(device)
-    self.ft = Prediction_Model(hid_dims, out_dims).to(device)
 
-    self.optimizer = optim.Adam(
-      list(self.ht.parameters()) +\
-      list(self.gt.parameters()) +\
-      list(self.ft.parameters()),
-      lr=1e-3
-    )
+    self.model = Network(in_dims,hid_dims,out_dims)
 
     self.memory = ReplayBuffer(100, out_dims)
     self.MinMaxStats = None 
@@ -61,9 +55,9 @@ class muzero:
     # unroll a step
     batch_size = state.shape[0]
     action = torch.tensor(action,dtype=torch.float).to(device).reshape(batch_size,1) / self.out_dims
-    nstate, reward = self.gt( torch.cat([state,action],dim=1) )
+    nstate, reward = self.model.gt( torch.cat([state,action],dim=1) )
 
-    policy, value = self.ft(nstate)
+    policy, value = self.model.ft(nstate)
     return nstate, reward, policy, value
 
   def ucb_score(self, parent: Node, child: Node) -> float:
@@ -74,7 +68,6 @@ class muzero:
     value_score = 0
     if child.visit_count > 0:
       value_score = self.MinMaxStats.normalize( child.reward + self.discount * child.value())
-      #value_score = child.reward + self.discount * self.MinMaxStats.normalize(child.value())
     return prior_score + value_score
 
 
@@ -86,10 +79,10 @@ class muzero:
   def mcts(self, obs, num_simulations=10, temperature=1):
     # init root node
     root = Node(0) 
-    root.hidden_state = self.ht(torch.tensor(obs,dtype=torch.float))
+    root.hidden_state = self.model.ht(torch.tensor(obs,dtype=torch.float))
 
     ## EXPAND root node
-    policy, _ = self.ft(root.hidden_state)  # random inital policy
+    policy, _ = self.model.ft(root.hidden_state)  # random inital policy
     policy = policy.detach().cpu()
     for i in range(policy.shape[1]):
       root.children[i] = Node(prior=policy[0,i])
@@ -131,9 +124,7 @@ class muzero:
       for bnode in reversed(search_path):
         bnode.visit_count += 1
         bnode.value_sum += value
-        #print(value, bnode.value_sum )
         self.MinMaxStats.update( bnode.reward + self.discount * bnode.value())
-        #self.MinMaxStats.update(node.value())
         value = bnode.reward + self.discount * value
 
     # SAMPLE an action proportional to the visit count of the child nodes of the root node
@@ -142,16 +133,14 @@ class muzero:
     policy = np.array([ child.visit_count/total_num_visits for _, child in root.children.items() ])
     policy = (policy**(1/temperature)) / (policy**(1/temperature)).sum()
     action = np.random.choice(len(policy), p=policy)
-
     policy = torch.tensor(policy).float()
 
     value = root.value()
     return action, policy, value, root
 
   def train(self, batch_size=32):
-    mse = nn.MSELoss() # mean squard error
+    mse = nn.MSELoss()          # mean squard error
     cre = nn.CrossEntropyLoss() # cross entropy loss
-    lsm = nn.LogSoftmax()
     if(len(self.memory) >= batch_size):
 
       reward_coef = 1
@@ -161,7 +150,7 @@ class muzero:
       discount = 0.99
       dtype = torch.float
       for _ in range(16):
-        self.optimizer.zero_grad()
+        self.model.optimizer.zero_grad()
         data = self.memory.sample(unroll_steps, n, discount, batch_size)
 
         # network unroll data
@@ -177,9 +166,9 @@ class muzero:
         loss = torch.tensor(0).to(device).to(dtype)
 
         # agent inital step
-        states = self.ht(obs)
-        policys, values = self.ft(states)
-        # 
+        states = self.model.ht(obs)
+        policys, values = self.model.ft(states)
+          
         #policy mse
         policy_loss = mse(policys, policy_target[:,0].detach())
         value_loss  = mse(values, value_target[:,0].detach())
@@ -187,9 +176,7 @@ class muzero:
 
         # steps
         for step in range(1, unroll_steps+1):
-        
           step_action = actions[:,step - 1]
-          #state, p, v, rewards = agent.rollout_step(state, step_action)
           states, rewards, policys, values = self.rollout_step(states, step_action)
 
           #policy mse
@@ -199,10 +186,9 @@ class muzero:
           
           loss += ( policy_loss + value_coef * value_loss + reward_coef * reward_loss) / unroll_steps
       
-
         ##print(loss)
         loss.backward()
-        self.optimizer.step() 
+        self.model.optimizer.step() 
     pass
 
 history_length = 3
@@ -211,17 +197,6 @@ stack_obs = stack_observations(history_length)
 env = gym.make('CartPole-v0')
 env = gym.wrappers.RecordEpisodeStatistics(env)
 agent = muzero(env.observation_space.shape[0]*history_length, env.action_space.n)
-
-
-#replay_capacity = 100
-#batch_size = 32
-#k = 5
-#n = 10
-#lr = 1e-3
-#value_coef = 1#0.01#1
-#reward_coef = 1
-#num_in = history_length * num_obs_space
-
 
 # self play
 scores, time_step = [], 0
