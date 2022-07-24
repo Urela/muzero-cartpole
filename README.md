@@ -12,5 +12,16 @@ Takes about 300 episodes to consitantly achieve a score of 200
 
 
 **DISCLAIMER**: this code is early research code. 
+Dependencies
+--------------------------
+- Pytorch
+- Python
+- Numpy 
+
+
+Training on Cartpole-v0 
+--------------------------
+To train a model, run the main function: ``python muzero.py``.
+
 
  
