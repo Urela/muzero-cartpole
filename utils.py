@@ -1,4 +1,5 @@
 
+import random
 import torch
 import numpy as np
 from collections import deque
@@ -49,15 +50,16 @@ class Game():
     self.obs  = [torch.tensor(start_obs)]
     self.actions = [] # starts at t = 0
     self.rewards = [] # starts at t = 1 (the transition reward for reaching state 1)
-    self.dones   = []
     self.policys = [] # starts at t = 0 (from MCTS)
     self.values  = [] # starts at t = 0 (from MCTS)
-  def store(self,obs,action,reward,done,policy,value):
-    self.obs.append(torch.tensor(obs))
-    self.actions.append(action)
+  def store(self,obs,action,reward,policy,value):
+    #self.obs.append(torch.tensor(obs))
     self.rewards.append(torch.tensor(reward))
-    self.dones.append(done)
     self.policys.append(torch.tensor(policy))
+    self.obs.append(obs)
+    self.actions.append(action)
+    #self.rewards.append(reward)
+    #self.policys.append(policy)
     self.values.append(value)
   def __len__(self): return len(self.obs)
 
@@ -68,11 +70,24 @@ class ReplayBuffer():
     self.size = size
     self.num_actions = num_actions
 
+    self.obs     = deque(maxlen=size) 
+    self.actions = deque(maxlen=size) 
+    self.rewards = deque(maxlen=size)
+    self.policys = deque(maxlen=size)
+    self.values  = deque(maxlen=size) 
+
   def __len__(self): 
     return len(self.buffer)
 
   def store(self, game):
     self.buffer.append(game)
+
+  def store3(self, game):
+    self.obs.append( game.obs)
+    self.actions.append(game.action)
+    self.rewards.append(game.rewards)
+    self.policys.append(game.policys)
+    self.values.append(game.value)
 
   def _sample(self, unroll_steps, n, discount):
     sample = {}
@@ -86,6 +101,7 @@ class ReplayBuffer():
 
     # select start index to unroll and fill data
     start_index = np.random.choice(game_length)
+    print(game_length)
 
     sample["obs"] = self.buffer[mem_idx].obs[start_index]
 
@@ -122,23 +138,33 @@ class ReplayBuffer():
     last_valid_index = np.minimum(game_last_index - 1, start_index + unroll_steps - 1)
     num_steps = last_valid_index - start_index
     
-    # real
-    sample["actions"] = self.buffer[mem_idx].actions[start_index:start_index+num_steps+1]
    
-    # fills
     num_fills = unroll_steps - num_steps + 1 
 
+    sample["actions"] = self.buffer[mem_idx].actions[start_index:start_index+num_steps+1]    # real
     for i in range(num_fills):
-      sample["actions"].append(np.random.choice(self.num_actions))
-
+      sample["actions"].append(np.random.choice(self.num_actions))  # fills
     
     return sample
 
   def sample(self, unroll_steps, n, discount, batch_size=100):
     return [ (self._sample(unroll_steps,n,discount)) for _ in range(batch_size)]
 
+  def sample2(self, batch_size=100): # sample a number of games from self.buffer, specified by the config parameter
+    if len(self.buffer) <= batch_size: 
+      return self.buffer.copy()
+    return np.random.choice(self.buffer, size=batch_size,replace=False).tolist()
 
-
+  def sample3(self, batch_size=100): # sample a number of games from self.buffer, specified by the config parameter
+    game_batchs = random.sample(self.buffer, batch_size)
+    #obs     = [ np.vstack(g.obs)     for g in game_batchs ]
+    obs     = [ np.vstack(g.obs)     for g in game_batchs ]
+    actions = [ g.actions for g in game_batchs ] 
+    rewards = [ g.rewards for g in game_batchs ] 
+    policys = [ g.policys for g in game_batchs ] 
+    values  = [ g.values  for g in game_batchs ] 
+    return obs, actions, rewards, policys , values
+    #return self.obs[batch], self.actions[batch], self.rewards[batch], self.policys[batch], self.values[batch]
 
 if __name__ == '__main__':
   import gym

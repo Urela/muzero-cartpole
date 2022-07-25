@@ -8,6 +8,7 @@ import numpy as np
 
 from network import *
 from utils import *
+rng = np.random.default_rng()
 
 device = "cpu"
 
@@ -37,9 +38,9 @@ class muzero:
 
     self.model = Network(in_dims,hid_dims,out_dims)
 
-    self.memory = ReplayBuffer(100, out_dims)
+    self.memory = ReplayBuffer(1000, out_dims)
     self.MinMaxStats = None 
-    self.discount  = 0.99
+    self.discount  = 0.95
     self.pb_c_base = 19652
     self.pb_c_init = 1.25
 
@@ -149,32 +150,80 @@ class muzero:
       unroll_steps = 5
       discount = 0.99
       dtype = torch.float
-      for _ in range(16):
+      for _ in range(1):
         self.model.optimizer.zero_grad()
-        data = self.memory.sample(unroll_steps, n, discount, batch_size)
+        # Load a batch of random games
+        sample_obs, sample_actions, sample_rewards, sample_policys, sample_values =  self.memory.sample3(batch_size) # returns a batch of games 
 
-        # network unroll data
-        obs = torch.stack([torch.flatten(data[i]["obs"]) for i in range(batch_size)]).to(device).to(dtype) # flatten when insert into mem
-        actions = np.stack([np.array(data[i]["actions"], dtype=np.int64) for i in range(batch_size)])
-        
-        # targets
-        rewards_target = torch.stack([torch.tensor(data[i]["rewards"]) for i in range(batch_size)]).to(device).to(dtype)
-        policy_target = torch.stack([torch.stack(data[i]["pi"]) for i in range(batch_size)]).to(device).to(dtype)
-        value_target = torch.stack([torch.tensor(data[i]["return"]) for i in range(batch_size)]).to(device).to(dtype)
-        
-        # loss
+        game_lengths = np.array([ len(g) for g in sample_obs ])
+        game_last_indices = game_lengths - 1
+
+        # select start index to unroll and fill data
+        start_indices = rng.integers(low=0, high=game_lengths)
+
+        obs = torch.tensor(([ sample_obs[i][idx] for i, idx in enumerate(start_indices)] )).to(device).to(dtype)
+
+        # unroll steps beyond trajectory then fill in the remaining (random) actions
+        last_valid_indices = np.minimum(game_last_indices - 1, start_indices + unroll_steps - 1)
+        num_steps = last_valid_indices - start_indices
+        num_fills = unroll_steps - num_steps + 1 
+
+        actions = [sample_actions[i][idx:idx+step+1] for i,(idx, step) in enumerate(zip(start_indices, num_steps))] 
+        for i, n in enumerate(num_fills):
+          for _ in range(n):
+            actions[i].append(np.random.choice(self.out_dims))  # fill in fake actions
+        actions = np.vstack(actions)
+
+        # compute n-step return for every unroll step, rewards and pi
+        rewards_target, value_target, policy_target = [],[],[] 
+        for i, start_index in enumerate(start_indices):
+          rewards, values, policys = [], [], []
+          for step in range(start_index, start_index+unroll_steps+1 ):
+
+            #########
+            n_index = step + n
+            if n_index >= game_last_indices[i]:
+              value = torch.tensor([0], dtype=torch.float).to(device)
+            else: value = sample_values[i][n_index] * (self.discount ** n) # discount value
+
+            # add discounted rewards until step n or end of episode
+            last_valid_index = np.minimum(game_last_indices[i], n_index)
+            for j, reward in enumerate(sample_values[i][step:last_valid_index]):
+              value += reward * (self.discount ** j)
+            values.append(value)
+            #########
+
+            # only add when not inital step | dont need reward for step 0
+            if step != start_index:
+              if step > 0  and step <= game_last_indices[i]:
+                rewards.append(sample_rewards[i][step-1])
+              else:
+                rewards.append(torch.tensor([0.0]).to(device))
+            # add policy
+            if step >= 0  and step < game_last_indices[i]:
+              policys.append(sample_policys[i][step])
+            else: policys.append(torch.tensor(np.ones(self.out_dims)/self.out_dims)) # mse loss
+
+          rewards_target.append(rewards)
+          policy_target.append(torch.stack(policys))
+          value_target.append(values)
+
+        rewards_target = torch.tensor( rewards_target ).to(device).to(dtype) 
+        value_target = torch.tensor( value_target )    .to(device).to(dtype)  
+        policy_target = torch.stack( policy_target )  .to(device).to(dtype) 
+        ### loss
         loss = torch.tensor(0).to(device).to(dtype)
 
-        # agent inital step
+        ## agent inital step
         states = self.model.ht(obs)
         policys, values = self.model.ft(states)
-          
-        #policy mse
+        ##  
+        ##policy mse
         policy_loss = mse(policys, policy_target[:,0].detach())
         value_loss  = mse(values, value_target[:,0].detach())
         loss += ( policy_loss + value_coef * value_loss) / 2
 
-        # steps
+        ### steps
         for step in range(1, unroll_steps+1):
           step_action = actions[:,step - 1]
           states, rewards, policys, values = self.rollout_step(states, step_action)
@@ -200,7 +249,7 @@ agent = muzero(env.observation_space.shape[0]*history_length, env.action_space.n
 
 # self play
 scores, time_step = [], 0
-for epi in range(1000):
+for epi in range(3):
   obs = env.reset()
   obs = stack_obs(obs)
   game = Game(obs)
@@ -210,7 +259,7 @@ for epi in range(1000):
     action, policy, value, root = agent.mcts(obs, 20, get_temperature(epi))
     obs, reward, done, info = env.step(action)
     obs = stack_obs(obs)
-    game.store(obs,action,reward,done,policy,value)
+    game.store(obs,action,reward,policy,value)
 
 
     if "episode" in info.keys(): 
@@ -218,5 +267,5 @@ for epi in range(1000):
       avg_score = np.mean(scores[-100:]) # moving average of last 100 episodes
       print(f"Episode {epi}, Return: {scores[-1]}, Avg return: {avg_score}")
       agent.memory.store(game)
-      agent.train(32)
+      agent.train(3)
       break
