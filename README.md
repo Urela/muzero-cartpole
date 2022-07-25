@@ -7,7 +7,7 @@
 - https://arxiv.org/src/1911.08265v1/anc/pseudocode.py
 - https://gym.openai.com/envs/CartPole-v1/
 
-Takes about 300 episodes to consitantly achieve a score of 200
+Takes about 310 episodes to consitantly achieve a score of 200
 - credits https://github.com/Hauf3n/MuZero-PyTorch
 
 
