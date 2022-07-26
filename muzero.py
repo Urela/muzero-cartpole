@@ -144,14 +144,14 @@ class muzero:
     cre = nn.CrossEntropyLoss() # cross entropy loss
     if(len(self.memory) >= batch_size):
 
-      reward_coef = 1
-      value_coef = 1
+      reward_coef,value_coef = 1, 1
       n = 10
       unroll_steps = 5
       discount = 0.99
       dtype = torch.float
-      for _ in range(1):
+      for _ in range(16):
         self.model.optimizer.zero_grad()
+
         # Load a batch of random games
         sample_obs, sample_actions, sample_rewards, sample_policys, sample_values =  self.memory.sample3(batch_size) # returns a batch of games 
 
@@ -161,7 +161,7 @@ class muzero:
         # select start index to unroll and fill data
         start_indices = rng.integers(low=0, high=game_lengths)
 
-        obs = torch.tensor(([ sample_obs[i][idx] for i, idx in enumerate(start_indices)] )).to(device).to(dtype)
+        obs = torch.tensor(([sample_obs[i][idx] for i, idx in enumerate(start_indices)] )).to(device).to(dtype)
 
         # unroll steps beyond trajectory then fill in the remaining (random) actions
         last_valid_indices = np.minimum(game_last_indices - 1, start_indices + unroll_steps - 1)
@@ -169,8 +169,8 @@ class muzero:
         num_fills = unroll_steps - num_steps + 1 
 
         actions = [sample_actions[i][idx:idx+step+1] for i,(idx, step) in enumerate(zip(start_indices, num_steps))] 
-        for i, n in enumerate(num_fills):
-          for _ in range(n):
+        for i, num_fill in enumerate(num_fills):
+          for _ in range(num_fill):
             actions[i].append(np.random.choice(self.out_dims))  # fill in fake actions
         actions = np.vstack(actions)
 
@@ -184,12 +184,12 @@ class muzero:
             n_index = step + n
             if n_index >= game_last_indices[i]:
               value = torch.tensor([0], dtype=torch.float).to(device)
-            else: value = sample_values[i][n_index] * (self.discount ** n) # discount value
+            else: value = sample_values[i][n_index] * (discount ** n) # discount value
 
             # add discounted rewards until step n or end of episode
             last_valid_index = np.minimum(game_last_indices[i], n_index)
             for j, reward in enumerate(sample_values[i][step:last_valid_index]):
-              value += reward * (self.discount ** j)
+              value += reward * (discount ** j)
             values.append(value)
             #########
 
@@ -197,8 +197,7 @@ class muzero:
             if step != start_index:
               if step > 0  and step <= game_last_indices[i]:
                 rewards.append(sample_rewards[i][step-1])
-              else:
-                rewards.append(torch.tensor([0.0]).to(device))
+              else: rewards.append(torch.tensor([0.0]).to(device))
             # add policy
             if step >= 0  and step < game_last_indices[i]:
               policys.append(sample_policys[i][step])
@@ -209,19 +208,21 @@ class muzero:
           value_target.append(values)
 
         rewards_target = torch.tensor( rewards_target ).to(device).to(dtype) 
-        value_target = torch.tensor( value_target )    .to(device).to(dtype)  
+        value_target  = torch.tensor( value_target )    .to(device).to(dtype)  
         policy_target = torch.stack( policy_target )  .to(device).to(dtype) 
+        #print( policy_target .shape )
         ### loss
         loss = torch.tensor(0).to(device).to(dtype)
 
         ## agent inital step
         states = self.model.ht(obs)
         policys, values = self.model.ft(states)
-        ##  
+            
         ##policy mse
         policy_loss = mse(policys, policy_target[:,0].detach())
         value_loss  = mse(values, value_target[:,0].detach())
         loss += ( policy_loss + value_coef * value_loss) / 2
+        #print(loss)
 
         ### steps
         for step in range(1, unroll_steps+1):
@@ -249,7 +250,7 @@ agent = muzero(env.observation_space.shape[0]*history_length, env.action_space.n
 
 # self play
 scores, time_step = [], 0
-for epi in range(3):
+for epi in range(500):
   obs = env.reset()
   obs = stack_obs(obs)
   game = Game(obs)
@@ -267,5 +268,5 @@ for epi in range(3):
       avg_score = np.mean(scores[-100:]) # moving average of last 100 episodes
       print(f"Episode {epi}, Return: {scores[-1]}, Avg return: {avg_score}")
       agent.memory.store(game)
-      agent.train(3)
+      agent.train(32)
       break
