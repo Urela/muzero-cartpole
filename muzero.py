@@ -8,6 +8,7 @@ import numpy as np
 
 from network import *
 from utils import *
+rng = np.random.default_rng()
 
 device = "cpu"
 
@@ -37,17 +38,15 @@ class muzero:
 
     self.model = Network(in_dims,hid_dims,out_dims)
 
-    self.memory = ReplayBuffer(100, out_dims)
+    self.memory = ReplayBuffer(1000, out_dims)
     self.MinMaxStats = None 
-    self.discount  = 0.99
+    self.discount  = 0.95
     self.pb_c_base = 19652
     self.pb_c_init = 1.25
 
     self.root_dirichlet_alpha = 0.25
     self.root_exploration_fraction = 0.25
 
-    self.unroll_steps = 10     # number of timesteps to unroll to match action trajectories for each game sample
-    self.bootstrap_steps = 500 # number of timesteps in the future to bootstrap true value
     self.out_dims = out_dims
     pass
 
@@ -154,13 +153,13 @@ class muzero:
         data = self.memory.sample(unroll_steps, n, discount, batch_size)
 
         # network unroll data
-        obs = torch.stack([torch.flatten(data[i]["obs"]) for i in range(batch_size)]).to(device).to(dtype) # flatten when insert into mem
-        actions = np.stack([np.array(data[i]["actions"], dtype=np.int64) for i in range(batch_size)])
-        
+        obs = torch.stack(data["obs"]).to(device).to(dtype) # flatten when insert into mem
+        actions = np.stack(data["actions"])
+
         # targets
-        rewards_target = torch.stack([torch.tensor(data[i]["rewards"]) for i in range(batch_size)]).to(device).to(dtype)
-        policy_target = torch.stack([torch.stack(data[i]["pi"]) for i in range(batch_size)]).to(device).to(dtype)
-        value_target = torch.stack([torch.tensor(data[i]["return"]) for i in range(batch_size)]).to(device).to(dtype)
+        rewards_target = torch.stack( data["rewards"]).to(device).to(dtype)
+        policy_target  = torch.stack( data["policys"]).to(device).to(dtype)
+        value_target   = torch.stack( data["returns"]).to(device).to(dtype)
         
         # loss
         loss = torch.tensor(0).to(device).to(dtype)
@@ -168,7 +167,7 @@ class muzero:
         # agent inital step
         states = self.model.ht(obs)
         policys, values = self.model.ft(states)
-          
+
         #policy mse
         policy_loss = mse(policys, policy_target[:,0].detach())
         value_loss  = mse(values, value_target[:,0].detach())
@@ -185,7 +184,6 @@ class muzero:
           reward_loss = mse(rewards, rewards_target[:,step-1].detach())
           
           loss += ( policy_loss + value_coef * value_loss + reward_coef * reward_loss) / unroll_steps
-      
         ##print(loss)
         loss.backward()
         self.model.optimizer.step() 
@@ -200,7 +198,7 @@ agent = muzero(env.observation_space.shape[0]*history_length, env.action_space.n
 
 # self play
 scores, time_step = [], 0
-for epi in range(1000):
+for epi in range(500):
   obs = env.reset()
   obs = stack_obs(obs)
   game = Game(obs)
@@ -210,8 +208,7 @@ for epi in range(1000):
     action, policy, value, root = agent.mcts(obs, 20, get_temperature(epi))
     obs, reward, done, info = env.step(action)
     obs = stack_obs(obs)
-    game.store(obs,action,reward,done,policy,value)
-
+    game.store(obs,action,reward,policy,value)
 
     if "episode" in info.keys(): 
       scores.append(int(info['episode']['r']))
