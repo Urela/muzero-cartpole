@@ -53,10 +53,10 @@ class Game():
     self.policys = [] # starts at t = 0 (from MCTS)
     self.values  = [] # starts at t = 0 (from MCTS)
   def store(self,obs,action,reward,policy,value):
-    #self.obs.append(torch.tensor(obs))
+    self.obs.append(torch.tensor(obs))
     self.rewards.append(torch.tensor(reward))
     self.policys.append(torch.tensor(policy))
-    self.obs.append(obs)
+    #self.obs.append(obs)
     self.actions.append(action)
     #self.rewards.append(reward)
     #self.policys.append(policy)
@@ -89,82 +89,62 @@ class ReplayBuffer():
     self.policys.append(game.policys)
     self.values.append(game.value)
 
-  def _sample(self, unroll_steps, n, discount):
-    sample = {}
-    sample["obs"], sample["pi"], sample["v"], sample["actions"], sample["rewards"], sample["return"] = [],[],[],[],[],[]
-
-    # select trajectory
-    mem_idx = np.random.choice(range(len(self.buffer))) # sampled index
-
-    game_length = len(self.buffer[mem_idx]) # get the length of a game
-    game_last_index = game_length - 1
-
-    # select start index to unroll and fill data
-    start_index = np.random.choice(game_length)
-    print(game_length)
-
-    sample["obs"] = self.buffer[mem_idx].obs[start_index]
-
-    # compute n-step return for every unroll step, rewards and pi
-    for step in range(start_index, start_index+unroll_steps+1 ):
-      n_index = step + n
-
-      if n_index >= game_last_index:
-        value = torch.tensor([0], dtype=torch.float).to(device)
-      else: value = self.buffer[mem_idx].values[n_index] * (discount ** n) # discount value
-
-      # add discounted rewards until step n or end of episode
-      last_valid_index = np.minimum(game_last_index, n_index)
-      for i, reward in enumerate(self.buffer[mem_idx].rewards[step:last_valid_index]):
-        value += reward * (discount ** i)
-      sample["return"].append(value)
-
-      # add reward
-      # only add when not inital step | dont need reward for step 0
-      if step != start_index:
-        if step > 0  and step <= game_last_index:
-          sample["rewards"].append(self.buffer[mem_idx].rewards[step-1])
-        else:
-          sample["rewards"].append(torch.tensor([0.0]).to(device))
-          
-      # add policy
-      if step >= 0  and step < game_last_index:
-        sample["pi"].append(self.buffer[mem_idx].policys[step])
-      else:
-        sample["pi"].append(torch.tensor(np.repeat(1,self.num_actions)/self.num_actions)) # mse loss
-        #sample["pi"].append(torch.tensor(np.repeat(1,self.num_actions)*0.0)) # cross entropy loss
-
-    # unroll steps beyond trajectory then fill in the remaining (random) actions
-    last_valid_index = np.minimum(game_last_index - 1, start_index + unroll_steps - 1)
-    num_steps = last_valid_index - start_index
-    
-   
-    num_fills = unroll_steps - num_steps + 1 
-
-    sample["actions"] = self.buffer[mem_idx].actions[start_index:start_index+num_steps+1]    # real
-    for i in range(num_fills):
-      sample["actions"].append(np.random.choice(self.num_actions))  # fills
-    
-    return sample
-
   def sample(self, unroll_steps, n, discount, batch_size=100):
-    return [ (self._sample(unroll_steps,n,discount)) for _ in range(batch_size)]
-
-  def sample2(self, batch_size=100): # sample a number of games from self.buffer, specified by the config parameter
-    if len(self.buffer) <= batch_size: 
-      return self.buffer.copy()
-    return np.random.choice(self.buffer, size=batch_size,replace=False).tolist()
-
-  def sample3(self, batch_size=100): # sample a number of games from self.buffer, specified by the config parameter
+    games, sample, data = [],{}, {}
+    # select trajectory
     game_batchs = random.sample(self.buffer, batch_size)
-    #obs     = [ np.vstack(g.obs)     for g in game_batchs ]
-    obs     = [ np.vstack(g.obs)     for g in game_batchs ]
-    actions = [ g.actions for g in game_batchs ] 
-    rewards = [ g.rewards for g in game_batchs ] 
-    policys = [ g.policys for g in game_batchs ] 
-    values  = [ g.values  for g in game_batchs ] 
-    return obs, actions, rewards, policys , values
-    #return self.obs[batch], self.actions[batch], self.rewards[batch], self.policys[batch], self.values[batch]
+    #data["obs"], data["pi"], data["actions"], data["rewards"], ["return"] = [],[],[],[],[]
+    for game in game_batchs:
+      sample = {}
+      sample["obs"], sample["pi"], sample["actions"], sample["rewards"], sample["return"] = [],[],[],[],[]
+
+      game_length = len(game) # get the length of a game
+      game_last_index = game_length - 1
+
+      # select start index to unroll and fill data
+      start_index = np.random.choice(game_length)
+      sample["obs"] = game.obs[start_index]
+
+      # compute n-step return for every unroll step, rewards and pi
+      for step in range(start_index, start_index+unroll_steps+1 ):
+        n_index = step + n
+
+        if n_index >= game_last_index:
+          value = torch.tensor([0], dtype=torch.float).to(device)
+        else: value = game.values[n_index] * (discount ** n) # discount value
+
+        # add discounted rewards until step n or end of episode
+        last_valid_index = np.minimum(game_last_index, n_index)
+        for i, reward in enumerate(game.rewards[step:last_valid_index]):
+          value += reward * (discount ** i)
+        sample["return"].append(value)
+
+        # add reward
+        # only add when not inital step | dont need reward for step 0
+        if step != start_index:
+          if step > 0  and step <= game_last_index:
+            sample["rewards"].append(game.rewards[step-1])
+          else:
+            sample["rewards"].append(torch.tensor([0.0]).to(device))
+            
+        # add policy
+        if step >= 0  and step < game_last_index:
+          sample["pi"].append(game.policys[step])
+        else:
+          sample["pi"].append(torch.tensor(np.repeat(1,self.num_actions)/self.num_actions)) # mse loss
+          #sample["pi"].append(torch.tensor(np.repeat(1,self.num_actions)*0.0)) # cross entropy loss
+
+      # unroll steps beyond trajectory then fill in the remaining (random) actions
+      last_valid_index = np.minimum(game_last_index - 1, start_index + unroll_steps - 1)
+      num_steps = last_valid_index - start_index
+      num_fills = unroll_steps - num_steps + 1 
+
+      sample["actions"] = game.actions[start_index:start_index+num_steps+1]    # real
+      for i in range(num_fills):
+        sample["actions"].append(np.random.choice(self.num_actions))  # fills
+    
+      games.append(sample)
+    return games
 
 if __name__ == '__main__':
   import gym
