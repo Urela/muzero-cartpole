@@ -1,6 +1,6 @@
 
 # MuZero - Cartpole
- Implementation oof MuZero in Pytorch on OpenAI's gym CartPole-v0  environment.
+ Implementation of MuZero in Pytorch on OpenAI's gym CartPole-v0  environment.
 
 
 - https://arxiv.org/abs/1911.08265
