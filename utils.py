@@ -93,9 +93,8 @@ class ReplayBuffer():
     games, sample, data = [],{}, {}
     # select trajectory
     game_batchs = random.sample(self.buffer, batch_size)
-    #data["obs"], data["pi"], data["actions"], data["rewards"], ["return"] = [],[],[],[],[]
+    data["obs"], data["policys"], data["actions"], data["rewards"], data["returns"] = [],[],[],[],[]
     for game in game_batchs:
-      sample = {}
       sample["obs"], sample["pi"], sample["actions"], sample["rewards"], sample["return"] = [],[],[],[],[]
 
       game_length = len(game) # get the length of a game
@@ -103,7 +102,7 @@ class ReplayBuffer():
 
       # select start index to unroll and fill data
       start_index = np.random.choice(game_length)
-      sample["obs"] = game.obs[start_index]
+      data["obs"].append(  game.obs[start_index].flatten() )
 
       # compute n-step return for every unroll step, rewards and pi
       for step in range(start_index, start_index+unroll_steps+1 ):
@@ -119,8 +118,7 @@ class ReplayBuffer():
           value += reward * (discount ** i)
         sample["return"].append(value)
 
-        # add reward
-        # only add when not inital step | dont need reward for step 0
+        # add reward  only add when not inital step | dont need reward for step 0
         if step != start_index:
           if step > 0  and step <= game_last_index:
             sample["rewards"].append(game.rewards[step-1])
@@ -132,7 +130,6 @@ class ReplayBuffer():
           sample["pi"].append(game.policys[step])
         else:
           sample["pi"].append(torch.tensor(np.repeat(1,self.num_actions)/self.num_actions)) # mse loss
-          #sample["pi"].append(torch.tensor(np.repeat(1,self.num_actions)*0.0)) # cross entropy loss
 
       # unroll steps beyond trajectory then fill in the remaining (random) actions
       last_valid_index = np.minimum(game_last_index - 1, start_index + unroll_steps - 1)
@@ -142,13 +139,16 @@ class ReplayBuffer():
       sample["actions"] = game.actions[start_index:start_index+num_steps+1]    # real
       for i in range(num_fills):
         sample["actions"].append(np.random.choice(self.num_actions))  # fills
+      data["actions"].append( np.array(sample["actions"], dtype=np.int64) )
+      data["returns"].append( torch.tensor(sample["return"]) )
+      data["rewards"].append( torch.tensor(sample["rewards"]) )
+      data["policys"].append( torch.stack(sample["pi"]) )
     
       games.append(sample)
-    return games
+    return data
 
 if __name__ == '__main__':
   import gym
-
   env = gym.make('CartPole-v1')
   env = gym.wrappers.RecordEpisodeStatistics(env)
 

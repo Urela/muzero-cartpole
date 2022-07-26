@@ -153,13 +153,13 @@ class muzero:
         data = self.memory.sample(unroll_steps, n, discount, batch_size)
 
         # network unroll data
-        obs = torch.stack([torch.flatten(data[i]["obs"]) for i in range(batch_size)]).to(device).to(dtype) # flatten when insert into mem
-        actions = np.stack([np.array(data[i]["actions"], dtype=np.int64) for i in range(batch_size)])
-        
+        obs = torch.stack(data["obs"]).to(device).to(dtype) # flatten when insert into mem
+        actions = np.stack(data["actions"])
+
         # targets
-        rewards_target = torch.stack([torch.tensor(data[i]["rewards"]) for i in range(batch_size)]).to(device).to(dtype)
-        policy_target = torch.stack([torch.stack(data[i]["pi"]) for i in range(batch_size)]).to(device).to(dtype)
-        value_target = torch.stack([torch.tensor(data[i]["return"]) for i in range(batch_size)]).to(device).to(dtype)
+        rewards_target = torch.stack( data["rewards"]).to(device).to(dtype)
+        policy_target  = torch.stack( data["policys"]).to(device).to(dtype)
+        value_target   = torch.stack( data["returns"]).to(device).to(dtype)
         
         # loss
         loss = torch.tensor(0).to(device).to(dtype)
@@ -168,8 +168,6 @@ class muzero:
         states = self.model.ht(obs)
         policys, values = self.model.ft(states)
 
-        #print(policy_target.shape)
-          
         #policy mse
         policy_loss = mse(policys, policy_target[:,0].detach())
         value_loss  = mse(values, value_target[:,0].detach())
@@ -186,7 +184,6 @@ class muzero:
           reward_loss = mse(rewards, rewards_target[:,step-1].detach())
           
           loss += ( policy_loss + value_coef * value_loss + reward_coef * reward_loss) / unroll_steps
-      
         ##print(loss)
         loss.backward()
         self.model.optimizer.step() 
@@ -212,7 +209,6 @@ for epi in range(500):
     obs, reward, done, info = env.step(action)
     obs = stack_obs(obs)
     game.store(obs,action,reward,policy,value)
-
 
     if "episode" in info.keys(): 
       scores.append(int(info['episode']['r']))
