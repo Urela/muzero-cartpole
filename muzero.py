@@ -197,7 +197,7 @@ env = gym.wrappers.RecordEpisodeStatistics(env)
 agent = muzero(env.observation_space.shape[0]*history_length, env.action_space.n)
 
 # self play
-scores, time_step = [], 0
+scores, avg_scores, time_step = [], [], 0
 for epi in range(500):
   obs = env.reset()
   obs = stack_obs(obs)
@@ -212,8 +212,17 @@ for epi in range(500):
 
     if "episode" in info.keys(): 
       scores.append(int(info['episode']['r']))
-      avg_score = np.mean(scores[-100:]) # moving average of last 100 episodes
-      print(f"Episode {epi}, Return: {scores[-1]}, Avg return: {avg_score}")
+      avg_scores.append(np.mean(scores[-100:])) # moving average of last 100 episodes
+      print(f"Episode {epi}, Return: {scores[-1]}, Avg return: {avg_scores[-1]}")
       agent.memory.store(game)
       agent.train(32)
       break
+
+env.close()
+#y2 = avg_scores 
+#x = np.arange(len(y1))
+#from bokeh.plotting import figure, show
+#p = figure(title="MuZero on CartPole-V0", x_axis_label="Episodes", y_axis_label="Scores")
+#p.line(x, y1,  legend_label="Scores", line_color="blue", line_width=2)
+p.line(x, y2,  legend_label="avg_Scores", line_color="red", line_width=2)
+show(p) 
