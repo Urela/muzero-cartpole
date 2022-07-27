@@ -56,10 +56,7 @@ class Game():
     self.obs.append(torch.tensor(obs))
     self.rewards.append(torch.tensor(reward))
     self.policys.append(torch.tensor(policy))
-    #self.obs.append(obs)
     self.actions.append(action)
-    #self.rewards.append(reward)
-    #self.policys.append(policy)
     self.values.append(value)
   def __len__(self): return len(self.obs)
 
@@ -90,12 +87,11 @@ class ReplayBuffer():
     self.values.append(game.value)
 
   def sample(self, unroll_steps, n, discount, batch_size=100):
-    games, sample, data = [],{}, {}
     # select trajectory
-    game_batchs = random.sample(self.buffer, batch_size)
+    game_batchs, data = random.sample(self.buffer, batch_size), {}
     data["obs"], data["policys"], data["actions"], data["rewards"], data["returns"] = [],[],[],[],[]
     for game in game_batchs:
-      sample["obs"], sample["pi"], sample["actions"], sample["rewards"], sample["return"] = [],[],[],[],[]
+      data["rewards"].append([]), data["policys"].append([]), data["returns"].append([])
 
       game_length = len(game) # get the length of a game
       game_last_index = game_length - 1
@@ -114,37 +110,36 @@ class ReplayBuffer():
 
         # add discounted rewards until step n or end of episode
         last_valid_index = np.minimum(game_last_index, n_index)
-        for i, reward in enumerate(game.rewards[step:last_valid_index]):
-          value += reward * (discount ** i)
-        sample["return"].append(value)
+
+        value = sum(rew * (discount ** i) for i, rew in enumerate(game.rewards[step:last_valid_index]))
+        data["returns"][-1].append(value)
 
         # add reward  only add when not inital step | dont need reward for step 0
         if step != start_index:
           if step > 0  and step <= game_last_index:
-            sample["rewards"].append(game.rewards[step-1])
+            data["rewards"][-1].append(game.rewards[step-1])
           else:
-            sample["rewards"].append(torch.tensor([0.0]).to(device))
+            data["rewards"][-1].append(torch.zeros(1,1).to(device))
             
         # add policy
         if step >= 0  and step < game_last_index:
-          sample["pi"].append(game.policys[step])
+          data["policys"][-1].append(game.policys[step])
         else:
-          sample["pi"].append(torch.tensor(np.repeat(1,self.num_actions)/self.num_actions)) # mse loss
+          data["policys"][-1].append(torch.ones(self.num_actions)/self.num_actions) # mse loss
 
       # unroll steps beyond trajectory then fill in the remaining (random) actions
       last_valid_index = np.minimum(game_last_index - 1, start_index + unroll_steps - 1)
       num_steps = last_valid_index - start_index
       num_fills = unroll_steps - num_steps + 1 
 
-      sample["actions"] = game.actions[start_index:start_index+num_steps+1]    # real
+      act = game.actions[start_index:start_index+num_steps+1]    # real
       for i in range(num_fills):
-        sample["actions"].append(np.random.choice(self.num_actions))  # fills
-      data["actions"].append( np.array(sample["actions"], dtype=np.int64) )
-      data["returns"].append( torch.tensor(sample["return"]) )
-      data["rewards"].append( torch.tensor(sample["rewards"]) )
-      data["policys"].append( torch.stack(sample["pi"]) )
+        act.append(np.random.choice(self.num_actions))  # fills
+      data["actions"].append( np.array(act, dtype=np.int64) )
+      data["rewards"][-1] = torch.tensor(data["rewards"][-1])
+      data["returns"][-1] = torch.tensor(data["returns"][-1]) 
+      data["policys"][-1] = torch.stack( data["policys"][-1])
     
-      games.append(sample)
     return data
 
 if __name__ == '__main__':
@@ -169,7 +164,7 @@ if __name__ == '__main__':
       policy, value = np.array([1 if i==action else 0 for i in range(out_dims)]), 0
 
       obs, reward, done, info = env.step(action)
-      game.store(obs,action,reward,done,policy,value)
+      game.store(obs,action,reward,policy,value)
 
       if "episode" in info.keys(): 
         scores.append(int(info['episode']['r']))
@@ -178,5 +173,5 @@ if __name__ == '__main__':
 
         memory.store(game)
         break
-    memory.sample(5, 10, 0.99, 100)
+    data = memory.sample(unroll_steps=5, n=10, discount=0.99, batch_size=1)
   env.close()

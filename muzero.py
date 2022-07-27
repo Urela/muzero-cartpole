@@ -142,27 +142,23 @@ class muzero:
     cre = nn.CrossEntropyLoss() # cross entropy loss
     if(len(self.memory) >= batch_size):
 
-      reward_coef = 1
-      value_coef = 1
-      n = 10
-      unroll_steps = 5
+      reward_coef, value_coef = 1, 1
+      unroll_steps, n = 5, 10
       discount = 0.99
-      dtype = torch.float
       for _ in range(16):
         self.model.optimizer.zero_grad()
         data = self.memory.sample(unroll_steps, n, discount, batch_size)
-
         # network unroll data
-        obs = torch.stack(data["obs"]).to(device).to(dtype) # flatten when insert into mem
+        obs = torch.stack(data["obs"]).to(device).to(torch.float) # flatten when insert into mem
         actions = np.stack(data["actions"])
 
         # targets
-        rewards_target = torch.stack( data["rewards"]).to(device).to(dtype)
-        policy_target  = torch.stack( data["policys"]).to(device).to(dtype)
-        value_target   = torch.stack( data["returns"]).to(device).to(dtype)
+        rewards_target = torch.stack( data["rewards"]).to(device).to(torch.float)
+        policy_target  = torch.stack( data["policys"]).to(device).to(torch.float)
+        value_target   = torch.stack( data["returns"]).to(device).to(torch.float)
         
         # loss
-        loss = torch.tensor(0).to(device).to(dtype)
+        loss = torch.tensor(0).to(device).to(torch.float)
 
         # agent inital step
         states = self.model.ht(obs)
@@ -189,7 +185,7 @@ class muzero:
         self.model.optimizer.step() 
     pass
 
-history_length = 3
+history_length = 1
 stack_obs = stack_observations(history_length)
 
 env = gym.make('CartPole-v0')
@@ -198,7 +194,7 @@ agent = muzero(env.observation_space.shape[0]*history_length, env.action_space.n
 
 # self play
 scores, time_step = [], 0
-for epi in range(500):
+for epi in range(1000):
   obs = env.reset()
   obs = stack_obs(obs)
   game = Game(obs)
